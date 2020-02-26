@@ -49,12 +49,15 @@ MAX_HISTORY_LEN = 200
 def set_data(view, regions):
     view_data = VIEW_DATA.setdefault(view.id(), ViewData())
     if regions == view_data.present:
+        if regions == []:
+            view.erase_regions(SELECTION_MARKER_KEY)
         return
 
     view_data.past = view_data.past[-MAX_HISTORY_LEN:] + [view_data.present]
     view_data.present = regions
     view_data.future = []
 
+    l.debug('set_data ' + str(view_data))
     mark_current_regions(view)
 
 def diff_groups(previous, current):
@@ -73,6 +76,15 @@ class IncrementalSelectAddCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
         view_data = VIEW_DATA.setdefault(view.id(), ViewData())
+
+        current_regions = [r for r in view.sel()]
+        if view_data.present:
+            if current_regions == view_data.present:
+                l.debug('Already added, toggling')
+                view.run_command('incremental_select_toggle')
+                return
+            else:
+                l.debug('selection is different')
 
         view.sel().add_all(view_data.present)
         # TODO: if we store these as "Selections" instead of arrays of regions
@@ -105,7 +117,7 @@ class IncrementalSelectToggleCommand(sublime_plugin.TextCommand):
         # we toggle it off by placing the cursor at the last added
         # selection if there is one, or at the original cursor
         if view_data.present:
-            if [r for r in current_regions] == view_data.present:
+            if current_regions == view_data.present:
                 # Deselect saved regions, collapse to a single cursor
                 # at the "most recent selection"
                 previous_selection_group = view_data.past[-1] if view_data.past else []
@@ -214,26 +226,36 @@ class IncrementalMultiSelectListener(sublime_plugin.EventListener):
             # TODO: handle multiple repeated undos? Can these even be stacked?
             if is_our_undoable_command(undo_command_name):
                 l_debug('undo: ({name}, {a}, {c})', name=undo_command_name, a=a, c=c)
-                new_present = past[-1] if past else []
-                new_past = past[:-1] if past else []
-                new_future = [present] + future
+                if past:
+                    new_present = past[-1]
+                    new_past = past[:-1]
+                    new_future = [present] + future
 
-                view_data.past = new_past
-                view_data.present = new_present
-                view_data.future = new_future
+                    view_data.past = new_past
+                    view_data.present = new_present
+                    view_data.future = new_future
+                    l.debug(view_data)
+                else:
+                    l.debug('undo history limit reached')
+                    view.window().status_message('Undo history limit reached')
 
         elif command_name == 'soft_redo':
             (redo_command_name, a, c) = view.command_history(1)
             # TODO: handle multiple repeated redos? Can these even be stacked?
             if is_our_undoable_command(redo_command_name):
                 l_debug('redo: ({name}, {a}, {c})', name=redo_command_name, a=a, c=c)
-                new_present = future[0] if future else []
-                new_future = future[1:] if future else []
-                new_past = past + [present]
+                if future:
+                    new_present = future[0] if future else []
+                    new_future = future[1:] if future else []
+                    new_past = past + [present]
 
-                view_data.past = new_past
-                view_data.present = new_present
-                view_data.future = new_future
+                    view_data.past = new_past
+                    view_data.present = new_present
+                    view_data.future = new_future
+                    l.debug(view_data)
+                else:
+                    l.debug('redo history limit reached')
+                    view.window().status_message('Redo history limit reached')
 
 def l_debug(msg, **kwargs):
     l.debug(msg.format(**kwargs))
