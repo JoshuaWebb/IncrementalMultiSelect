@@ -1,8 +1,18 @@
 import sublime
 import sublime_plugin
 
+import os
+import shutil
+
+import logging
+
+DEFAULT_LOG_LEVEL = logging.DEBUG
+#DEFAULT_LOG_LEVEL = logging.INFO
+l = logging.getLogger(__name__)
 
 PLUGIN_KEY = 'IncrementalMultiSelect'
+SELECTION_MARKER_KEY = PLUGIN_KEY + '.saved_selection'
+SELECTION_MARKER_SCOPE = 'incremental_multi_select.saved_selection'
 
 VIEW_DATA = {}
 
@@ -26,14 +36,18 @@ def set_data(view, regions):
     if regions == view_data.present:
         return
 
-    # TODO: Mark selected regions visually until the selection is cleared?
-
     view_data.past = view_data.past + [view_data.present]
     view_data.present = regions
     view_data.future = []
 
+    mark_current_regions(view)
+
 def diff_groups(previous, current):
     return [x for x in previous if x not in current] + [y for y in current if y not in previous]
+
+def mark_current_regions(view):
+    view_data = VIEW_DATA.setdefault(view.id(), ViewData())
+    view.add_regions(SELECTION_MARKER_KEY, view_data.present, SELECTION_MARKER_SCOPE, flags=sublime.DRAW_EMPTY|sublime.DRAW_NO_FILL)
 
 class IncrementalSelectClearCommand(sublime_plugin.TextCommand):
     def run(self, edit):
@@ -100,7 +114,67 @@ def is_our_undoable_command(command_name):
     undoable_commands = ['incremental_select_clear', 'incremental_select_add', 'incremental_select_subtract']
     return any(command_name == undoable_command_name for undoable_command_name in undoable_commands)
 
-class IncrementalSelectUndoListener(sublime_plugin.EventListener):
+class IncrementalMultiSelectListener(sublime_plugin.EventListener):
+    registered_views = set()
+    color_schemes = set()
+    def __init__(self):
+        # NOTE: Clear all markers from previous sessions
+        for window in sublime.windows():
+            for view in window.views():
+                view.erase_regions(SELECTION_MARKER_KEY)
+
+    def on_activated_async(self, view):
+        if view.id() not in self.registered_views:
+            self.on_first_activation_async(view)
+
+        # Every activation:
+        pass
+
+    def on_first_activation_async(self, view):
+        settings = view.settings()
+        settings.clear_on_change(PLUGIN_KEY)
+        settings.add_on_change(PLUGIN_KEY, lambda: self.settings_changed(view))
+
+        self.setup_color_scheme(view)
+        self.registered_views.add(view.id())
+
+    def on_pre_close(self, view):
+        self.registered_views.discard(view.id())
+
+    def settings_changed(self, view):
+        self.setup_color_scheme(view)
+
+    def setup_color_scheme(self, view):
+        current_color_scheme = view.settings().get("color_scheme")
+
+        if current_color_scheme is None:
+            return
+
+        # NOTE: Only do it once per plugin activation.
+        # We don't want to bail out if it already exists because we
+        # want to be able to update the source and have it be copied
+        # again then next time the plugin is loaded.
+        if current_color_scheme in self.color_schemes:
+            return
+
+        self.color_schemes.add(current_color_scheme)
+
+        plugin_dir = os.path.join(sublime.packages_path(), PLUGIN_KEY)
+
+        # Copy our override rules to a new colour scheme file
+        # inside our plugin directory, with the same name as the
+        # active colour scheme.
+        color_schemes_dir = os.path.join(plugin_dir, 'color_schemes')
+        os.makedirs(color_schemes_dir, exist_ok = True)
+
+        scheme_name = os.path.splitext(os.path.basename(current_color_scheme))[0]
+        scheme_dest_path = os.path.join(color_schemes_dir, scheme_name + os.extsep + "sublime-color-scheme")
+
+        source_scheme_path = os.path.join(plugin_dir, 'Default.sublime-color-scheme')
+        l_debug("copying '{source}' to '{dest}'", source=source_scheme_path, dest=scheme_dest_path)
+        shutil.copy(source_scheme_path, scheme_dest_path)
+
+    # NOTE: Undo/Redo internal state synchronisation
     def on_text_command(self, view, command_name, args):
         view_data = VIEW_DATA.setdefault(view.id(), ViewData())
         if command_name == 'soft_undo':
@@ -124,3 +198,20 @@ class IncrementalSelectUndoListener(sublime_plugin.EventListener):
                 view_data.past = view_data.past + [present]
                 view_data.present = next
                 view_data.future = new_future
+
+def l_debug(msg, **kwargs):
+    l.debug(msg.format(**kwargs))
+
+def plugin_loaded():
+    pl = logging.getLogger(__package__)
+    for handler in pl.handlers[:]:
+        pl.removeHandler(handler)
+
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(fmt="{asctime} [{name}] {levelname}: {message}",
+                                  style='{')
+    handler.setFormatter(formatter)
+    pl.addHandler(handler)
+
+    pl.setLevel(DEFAULT_LOG_LEVEL)
+    l.debug('plugin_loaded')
