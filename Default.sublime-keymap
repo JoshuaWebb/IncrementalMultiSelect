@@ -1,0 +1,18 @@
+[
+    {
+        "keys": ["ctrl+keypad0"],
+        "command": "incremental_select_clear",
+    },
+    {
+        "keys": ["ctrl+keypad1"],
+        "command": "incremental_select_add",
+    },
+    {
+        "keys": ["ctrl+keypad2"],
+        "command": "incremental_select_subtract",
+    },
+    {
+        "keys": ["ctrl+keypad3"],
+        "command": "incremental_select_toggle",
+    },
+]

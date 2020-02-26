@@ -1,0 +1,7 @@
+[
+    {
+        "caption": "Split Selection By String",
+        "command": "split_selection_by_string",
+        "args": {"prompt": true},
+    },
+]
