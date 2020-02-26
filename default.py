@@ -89,9 +89,11 @@ class IncrementalSelectToggleCommand(sublime_plugin.TextCommand):
         # If the current selection matches the saved region, then
         # we toggle it off by placing the cursor at the last added
         # selection if there is one, or at the original cursor
-        if any(view_data.present):
+        if view_data.present:
             if [r for r in current_regions] == view_data.present:
-                previous_selection_group = view_data.past[-1] or []
+                # Deselect saved regions, collapse to a single cursor
+                # at the "most recent selection"
+                previous_selection_group = view_data.past[-1] if view_data.past else []
                 if previous_selection_group == []:
                     most_recent_selection_group = view_data.present
                 else:
@@ -103,10 +105,15 @@ class IncrementalSelectToggleCommand(sublime_plugin.TextCommand):
                 #  going to be consistent, and always pick the lowest one in
                 #  the text region. (We can at least get the direction correct
                 #  by using `b` instead of `end()`)
-                lowest_selection = most_recent_selection_group[-1]
-                view.sel().add(lowest_selection.b)
+                if most_recent_selection_group:
+                    lowest_selection = most_recent_selection_group[-1]
+                    view.sel().add(lowest_selection.b)
+                else:
+                    view.sel().add_all(current_regions)
             else:
+                # Select the saved regions
                 view.sel().add_all(view_data.present)
+        # There's no saved region, so restore their original selection
         else:
             view.sel().add_all(current_regions)
 
@@ -176,27 +183,41 @@ class IncrementalMultiSelectListener(sublime_plugin.EventListener):
 
     # NOTE: Undo/Redo internal state synchronisation
     def on_text_command(self, view, command_name, args):
-        view_data = VIEW_DATA.setdefault(view.id(), ViewData())
+        if view.id() not in VIEW_DATA:
+            return
+
+        view_data = VIEW_DATA[view.id()]
+        past = view_data.past
+        present = view_data.present
+        future = view_data.future
+
+        # TODO: memory/speed perf of using arrays like this... we may want to
+        #  use some kind of immutable/"persistent" data structure, if all the
+        #  reference copying turns out to be a problem
         if command_name == 'soft_undo':
-            (undo_command_name, _, _) = view.command_history(0)
+            (undo_command_name, a, c) = view.command_history(0)
+            # TODO: handle multiple repeated undos? Can these even be stacked?
             if is_our_undoable_command(undo_command_name):
-                previous = view_data.past[-1]
-                new_past = view_data.past[:-1]
-                present = view_data.present
+                l_debug('undo: ({name}, {a}, {c})', name=undo_command_name, a=a, c=c)
+                new_present = past[-1] if past else []
+                new_past = past[:-1] if past else []
+                new_future = [present] + future
 
                 view_data.past = new_past
-                view_data.present = previous
-                view_data.future = [present] + view_data.future
+                view_data.present = new_present
+                view_data.future = new_future
 
         elif command_name == 'soft_redo':
-            (redo_command_name, _, _) = view.command_history(1)
+            (redo_command_name, a, c) = view.command_history(1)
+            # TODO: handle multiple repeated redos? Can these even be stacked?
             if is_our_undoable_command(redo_command_name):
-                next = view_data.future[0]
-                new_future = view_data.future[1:]
-                present = view_data.present
+                l_debug('redo: ({name}, {a}, {c})', name=redo_command_name, a=a, c=c)
+                new_present = future[0] if future else []
+                new_future = future[1:] if future else []
+                new_past = past + [present]
 
-                view_data.past = view_data.past + [present]
-                view_data.present = next
+                view_data.past = new_past
+                view_data.present = new_present
                 view_data.future = new_future
 
 def l_debug(msg, **kwargs):
