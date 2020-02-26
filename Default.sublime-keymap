@@ -15,4 +15,8 @@
         "keys": ["ctrl+keypad3"],
         "command": "incremental_select_toggle",
     },
+    {
+        "keys": ["ctrl+keypad5"],
+        "command": "incremental_select_reorient",
+    },
 ]

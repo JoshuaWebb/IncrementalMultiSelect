@@ -12,60 +12,25 @@ l = logging.getLogger(__name__)
 
 PLUGIN_KEY = 'IncrementalMultiSelect'
 SELECTION_MARKER_KEY = PLUGIN_KEY + '.saved_selection'
+NEWEST_ADD_MARKER_KEY = PLUGIN_KEY + '.newest_add'
+NEWEST_SUB_MARKER_KEY = PLUGIN_KEY + '.newest_sub'
+NEWEST_CHANGE_MARKER_KEY = PLUGIN_KEY + '.newest_change'
 SELECTION_MARKER_SCOPE = 'incremental_multi_select.saved_selection'
+NEWEST_ADD_MARKER_SCOPE = 'incremental_multi_select.newest_add'
+NEWEST_SUB_MARKER_SCOPE = 'incremental_multi_select.newest_sub'
+NEWEST_CHANGE_MARKER_SCOPE = 'incremental_multi_select.newest_change'
 
-VIEW_DATA = {}
-
-class ViewData:
-    __slots__ = [
-        "past",
-        "present",
-        "future",
-    ]
-
-    def __init__(self):
-        self.past = []
-        self.present = []
-        self.future = []
-
-    def __str__(self):
-        return '{0}\n{1}\n{2}'.format(self.past, self.present, self.future)
-
-# NOTE: Limit length of history so we aren't just piling up data
-#  from the dawn of time, a lot of the selections probably aren't
-#  going to make sense after even a small number of text transformations
-#  have been applied anyway, undo/redo is mostly useful in a local context
-#  (e.g.
-#    "oops, I just added the wrong thing to the selection"
-#    add to selection, soft undo, move cursor left by one, add to selection,
-#    "thaaat's what I actually wanted",
-#   rather than
-#    "I think I had the selection I wanted 250 selections ago,
-#     lemme just soft undo for a loooooong time...")
-#
-#  That being said, this number is entirely arbitrary, we're just trying to
-#  prevent entries piling up for weeks on end when we leave Sublime open
-MAX_HISTORY_LEN = 200
 def set_data(view, regions):
-    view_data = VIEW_DATA.setdefault(view.id(), ViewData())
-    if regions == view_data.present:
-        if regions == []:
-            view.erase_regions(SELECTION_MARKER_KEY)
-        return
-
-    view_data.past = view_data.past[-MAX_HISTORY_LEN:] + [view_data.present]
-    view_data.present = regions
-    view_data.future = []
-
-    l.debug('set_data ' + str(view_data))
-    mark_current_regions(view)
+    view.add_regions(SELECTION_MARKER_KEY, regions, SELECTION_MARKER_SCOPE, flags=sublime.DRAW_EMPTY|sublime.DRAW_NO_FILL)
 
 def diff_groups(previous, current):
     return [x for x in previous if x not in current] + [y for y in current if y not in previous]
 
-def mark_current_regions(view):
-    view_data = VIEW_DATA.setdefault(view.id(), ViewData())
-    view.add_regions(SELECTION_MARKER_KEY, view_data.present, SELECTION_MARKER_SCOPE, flags=sublime.DRAW_EMPTY|sublime.DRAW_NO_FILL)
+class IncrementalSelectReorientCommand(sublime_plugin.TextCommand):
+    def run(self, edit):
+        view = self.view
+        reoriented = [sublime.Region(r.begin(), r.end()) for r in view.sel()]
+        view.sel().add_all(reoriented)
 
 class IncrementalSelectClearCommand(sublime_plugin.TextCommand):
     def run(self, edit):
@@ -75,31 +40,41 @@ class IncrementalSelectClearCommand(sublime_plugin.TextCommand):
 class IncrementalSelectAddCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
-        view_data = VIEW_DATA.setdefault(view.id(), ViewData())
 
+        saved_selection = view.get_regions(SELECTION_MARKER_KEY)
         current_regions = [r for r in view.sel()]
-        if view_data.present:
-            if current_regions == view_data.present:
-                l.debug('Already added, toggling')
+        new_regions = [y for y in current_regions if y not in saved_selection]
+        if saved_selection:
+            if current_regions == saved_selection:
+                l.debug('Selection already matches, toggling')
+                view.run_command('incremental_select_toggle')
+                return
+            elif not new_regions:
+                l.debug('Selection already added, toggling')
                 view.run_command('incremental_select_toggle')
                 return
             else:
-                l.debug('selection is different')
+                l.debug('New selected region(s)')
 
-        view.sel().add_all(view_data.present)
-        # TODO: if we store these as "Selections" instead of arrays of regions
-        #  will they be kept in sync with the view in the undo - history?
-        #  so we could edit the text while doing an incremental select?
+        view.add_regions(NEWEST_ADD_MARKER_KEY, new_regions, NEWEST_ADD_MARKER_SCOPE, flags=sublime.HIDDEN)
+        view.add_regions(NEWEST_CHANGE_MARKER_KEY, new_regions, NEWEST_CHANGE_MARKER_SCOPE, flags=sublime.HIDDEN)
+        l.debug('saved_selection: ' + str(saved_selection))
+        l.debug('current_regions: ' + str(current_regions))
+        l.debug('new_regions: ' + str(new_regions))
+
+        view.sel().add_all(saved_selection)
         set_data(view, [r for r in view.sel()])
 
 class IncrementalSelectSubtractCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
-        view_data = VIEW_DATA.setdefault(view.id(), ViewData())
 
         regions_to_subtract = [r for r in view.sel()]
+        view.add_regions(NEWEST_SUB_MARKER_KEY, regions_to_subtract, NEWEST_SUB_MARKER_SCOPE, flags=sublime.HIDDEN)
+        view.add_regions(NEWEST_CHANGE_MARKER_KEY, regions_to_subtract, NEWEST_CHANGE_MARKER_SCOPE, flags=sublime.HIDDEN)
 
-        view.sel().add_all(view_data.present)
+        saved_selection = view.get_regions(SELECTION_MARKER_KEY)
+        view.sel().add_all(saved_selection)
         for r in regions_to_subtract:
             view.sel().subtract(r)
 
@@ -108,23 +83,22 @@ class IncrementalSelectSubtractCommand(sublime_plugin.TextCommand):
 class IncrementalSelectToggleCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
-        view_data = VIEW_DATA.setdefault(view.id(), ViewData())
+        # TODO: We could store the original sel in another marked region
+        #  and toggle between _that_ and the selection instead/depending on
+        #  the context?
 
+        saved_selection = view.get_regions(SELECTION_MARKER_KEY)
         current_regions = [r for r in view.sel()]
         view.sel().clear()
 
         # If the current selection matches the saved region, then
         # we toggle it off by placing the cursor at the last added
         # selection if there is one, or at the original cursor
-        if view_data.present:
-            if current_regions == view_data.present:
+        if saved_selection:
+            if current_regions == saved_selection:
                 # Deselect saved regions, collapse to a single cursor
                 # at the "most recent selection"
-                previous_selection_group = view_data.past[-1] if view_data.past else []
-                if previous_selection_group == []:
-                    most_recent_selection_group = view_data.present
-                else:
-                    most_recent_selection_group = diff_groups(previous_selection_group, current_regions)
+                most_recent_selection_group = view.get_regions(NEWEST_CHANGE_MARKER_KEY)
 
                 # NOTE: Ideally we'd be able to get the order in which these
                 #  selections actually happened so we could place the cursor
@@ -138,15 +112,9 @@ class IncrementalSelectToggleCommand(sublime_plugin.TextCommand):
                 else:
                     view.sel().add_all(current_regions)
             else:
-                # Select the saved regions
-                view.sel().add_all(view_data.present)
-        # There's no saved region, so restore their original selection
-        else:
+                view.sel().add_all(saved_selection)
+        elif current_regions:
             view.sel().add_all(current_regions)
-
-def is_our_undoable_command(command_name):
-    undoable_commands = ['incremental_select_clear', 'incremental_select_add', 'incremental_select_subtract']
-    return any(command_name == undoable_command_name for undoable_command_name in undoable_commands)
 
 class IncrementalMultiSelectListener(sublime_plugin.EventListener):
     registered_views = set()
@@ -207,55 +175,6 @@ class IncrementalMultiSelectListener(sublime_plugin.EventListener):
         source_scheme_path = os.path.join(plugin_dir, 'Default.sublime-color-scheme')
         l_debug("copying '{source}' to '{dest}'", source=source_scheme_path, dest=scheme_dest_path)
         shutil.copy(source_scheme_path, scheme_dest_path)
-
-    # NOTE: Undo/Redo internal state synchronisation
-    def on_text_command(self, view, command_name, args):
-        if view.id() not in VIEW_DATA:
-            return
-
-        view_data = VIEW_DATA[view.id()]
-        past = view_data.past
-        present = view_data.present
-        future = view_data.future
-
-        # TODO: memory/speed perf of using arrays like this... we may want to
-        #  use some kind of immutable/"persistent" data structure, if all the
-        #  reference copying turns out to be a problem
-        if command_name == 'soft_undo':
-            (undo_command_name, a, c) = view.command_history(0)
-            # TODO: handle multiple repeated undos? Can these even be stacked?
-            if is_our_undoable_command(undo_command_name):
-                l_debug('undo: ({name}, {a}, {c})', name=undo_command_name, a=a, c=c)
-                if past:
-                    new_present = past[-1]
-                    new_past = past[:-1]
-                    new_future = [present] + future
-
-                    view_data.past = new_past
-                    view_data.present = new_present
-                    view_data.future = new_future
-                    l.debug(view_data)
-                else:
-                    l.debug('undo history limit reached')
-                    view.window().status_message('Undo history limit reached')
-
-        elif command_name == 'soft_redo':
-            (redo_command_name, a, c) = view.command_history(1)
-            # TODO: handle multiple repeated redos? Can these even be stacked?
-            if is_our_undoable_command(redo_command_name):
-                l_debug('redo: ({name}, {a}, {c})', name=redo_command_name, a=a, c=c)
-                if future:
-                    new_present = future[0] if future else []
-                    new_future = future[1:] if future else []
-                    new_past = past + [present]
-
-                    view_data.past = new_past
-                    view_data.present = new_present
-                    view_data.future = new_future
-                    l.debug(view_data)
-                else:
-                    l.debug('redo history limit reached')
-                    view.window().status_message('Redo history limit reached')
 
 def l_debug(msg, **kwargs):
     l.debug(msg.format(**kwargs))
