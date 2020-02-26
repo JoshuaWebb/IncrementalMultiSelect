@@ -31,12 +31,27 @@ class ViewData:
     def __str__(self):
         return '{0}\n{1}\n{2}'.format(self.past, self.present, self.future)
 
+# NOTE: Limit length of history so we aren't just piling up data
+#  from the dawn of time, a lot of the selections probably aren't
+#  going to make sense after even a small number of text transformations
+#  have been applied anyway, undo/redo is mostly useful in a local context
+#  (e.g.
+#    "oops, I just added the wrong thing to the selection"
+#    add to selection, soft undo, move cursor left by one, add to selection,
+#    "thaaat's what I actually wanted",
+#   rather than
+#    "I think I had the selection I wanted 250 selections ago,
+#     lemme just soft undo for a loooooong time...")
+#
+#  That being said, this number is entirely arbitrary, we're just trying to
+#  prevent entries piling up for weeks on end when we leave Sublime open
+MAX_HISTORY_LEN = 200
 def set_data(view, regions):
     view_data = VIEW_DATA.setdefault(view.id(), ViewData())
     if regions == view_data.present:
         return
 
-    view_data.past = view_data.past + [view_data.present]
+    view_data.past = view_data.past[-MAX_HISTORY_LEN:] + [view_data.present]
     view_data.present = regions
     view_data.future = []
 
