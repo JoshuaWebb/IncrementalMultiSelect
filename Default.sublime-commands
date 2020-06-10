@@ -1,7 +1,22 @@
 [
     {
-        "caption": "Split Selection By String",
-        "command": "split_selection_by_string",
-        "args": {"prompt": true},
+        "caption": "Incremental Select: Clear",
+        "command": "incremental_select_clear",
+    },
+    {
+        "caption": "Incremental Select: Add",
+        "command": "incremental_select_add",
+    },
+    {
+        "caption": "Incremental Select: Subtract",
+        "command": "incremental_select_subtract",
+    },
+    {
+        "caption": "Incremental Select: Toggle",
+        "command": "incremental_select_toggle",
+    },
+    {
+        "caption": "Incremental Select: Reorient",
+        "command": "incremental_select_reorient",
     },
 ]
